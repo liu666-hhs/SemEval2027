@@ -38,6 +38,7 @@
 - **输出**：LoRA 适配器权重。
 
 ### 2. GRPO (强化学习) 阶段
+模型加载：加载 SFT 基座，挂载 LoRA 权重，开启 finetune_vision_layers=True。
 - **核心配置**：
   ```python
   learning_rate = 5e-6         # 强化学习需极小学习率，防模型灾难性遗忘
