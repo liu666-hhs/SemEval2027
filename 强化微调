@@ -1,0 +1,161 @@
+from concurrent.futures import ThreadPoolExecutor
+import json
+import os
+import torch
+from PIL import Image
+from unsloth import FastModel, FastVisionModel, UnslothVisionDataCollator
+from trl import SFTConfig, SFTTrainer
+from datasets import Dataset,  Sequence, load_dataset
+from datasets import Dataset, Sequence, load_dataset, Image as HFImage
+import torch
+import datasets
+from bert_score import BERTScorer
+import json
+device = "cuda" if torch.cuda.is_available() else "cpu"
+model_path=r"D:\huggingface\jhu-clspmmBERT-base"
+scorer = BERTScorer(
+    model_type           = model_path,   # pinned revision 的本地路径
+    num_layers           = 17,           # ← 排行榜指定
+    batch_size           = 64,           # ← 排行榜指定
+    nthreads             = 4,
+    idf                  = False,        # ← 关闭 IDF
+    device               = device,
+    lang                 = None,         # ← 多语言，不指定
+    rescale_with_baseline= False,        # ← 不重缩放
+    use_fast_tokenizer   = True,         # mmBERT 用 fast
+)
+scorer._tokenizer.model_max_length = 512   # ← 排行榜指定
+max_seq_length = 1200 # Must be this long for VLMs
+lora_rank = 16 # Larger rank = smarter, but slower
+MAX_SIDE=900
+def load_image(path):
+    with Image.open(path) as im:
+        im = im.convert("RGB")
+        if max(im.size) > MAX_SIDE:
+            im.thumbnail((MAX_SIDE, MAX_SIDE), Image.LANCZOS)  # 原地缩放
+        return im
+from peft import PeftModel
+IMAGE_ROOT = r"D:\liu\Desktop\多模态文化图片+文字\dataset\images_mena_train"
+# 1. 加载原版基座模型
+base_model_path = r"D:\huggingface\QwenQwen3.5-4B" # 你的原始模型路径
+lora_path = r"D:\liu\Desktop\多模态文化图片+文字\qwen3_588" # 刚才保存的 LoRA 路径
+
+model, tokenizer = FastVisionModel.from_pretrained(
+    model_name = lora_path,
+    max_seq_length = max_seq_length,
+    load_in_4bit = True,
+    load_in_16bit =False,
+    full_finetuning = False,
+    device_map = "cuda",
+)
+model = FastVisionModel.get_peft_model(
+    model,
+    finetune_vision_layers     = True, # False if not finetuning vision layers
+    finetune_language_layers   = True, # False if not finetuning language layers
+    finetune_attention_modules = True, # False if not finetuning attention layers
+    finetune_mlp_modules       = True, # False if not finetuning MLP layers
+    r =16,       
+                        # The larger, the higher the accuracy, but might overfit
+    lora_alpha = 16,                  # Recommended alpha == r at least
+    lora_dropout = 0,
+    bias = "none",
+    use_gradient_checkpointing = "unsloth", 
+    random_state = 3407,
+    use_rslora = False,               # We support rank stabilized LoRA
+    loftq_config = None,               # And LoftQ   # Optional now! Can specify a list if needed
+)
+FastVisionModel.for_training(model) # Enable for training!
+
+def raward(completions,answer,**kwargs):
+    print("ddddddddddddddddddddddddddddddddddddddddddddddddddd")
+    prompts = kwargs.get("prompts")
+    print(prompts[0])
+    print(completions[0])
+    print(answer[0])
+    g=len(completions)
+    q=[]
+    w=[]
+    for i in answer:
+        q.append(i)
+    for i in completions:
+        w.append(i)
+    _, _, F1 = scorer.score(w, q)
+    print(max(F1.tolist()))
+    return F1.tolist()
+    
+def make_prompt(q):
+    return (
+        "Look at the image and answer the question in 1–2 concise sentences. "
+        "Do not deviate from the question, and do not guess, speculate, or fabricate."
+        f"\n\nQuestion: {q}"
+    )
+
+def load_image_column(example):
+    prompt = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "image"},  # Placeholder for the image
+                {"type": "text", "text":make_prompt(example["question"])},  # The text part of the prompt
+            ],
+        },
+    ]
+    an=example["answer"]
+    ll = os.path.join(IMAGE_ROOT, example["image"])
+    ll=load_image(ll)
+    return {"prompt":prompt,"image":ll,"answer":an}
+w = load_dataset("parquet", data_files=r"D:\liu\Desktop\多模态文化图片+文字\dataset\train_en.parquet",split="train")
+w=w.select(range(500))
+train_dataset = w.map(load_image_column)
+from datasets import Image as HFImage
+train_dataset = train_dataset.cast_column("image", HFImage())
+from trl import GRPOConfig, GRPOTrainer
+training_args = GRPOConfig(
+    learning_rate = 5e-5,
+    beta=0.04,
+    adam_beta1 = 0.9,
+    adam_beta2 = 0.99,
+    weight_decay = 0.1,
+    warmup_ratio = 0.1,
+    lr_scheduler_type = "cosine",
+    optim = "adamw_8bit",
+    logging_steps = 1,
+    log_completions = False,
+    per_device_train_batch_size = 2,
+    gradient_accumulation_steps = 4, # Increase to 4 for smoother training
+    num_generations = 4, # Decrease if out of memory
+    max_prompt_length = 300,
+    max_completion_length = 100,
+    # num_train_epochs = 0.5, # Set to 1 for a full training run
+    max_steps=100,
+    max_grad_norm = 1,
+    report_to = "none", # Can use Weights & Biases
+    output_dir = "outputs",
+    bf16=True,
+    # Below enables GSPO:
+    importance_sampling_level = "sequence",
+    mask_truncated_completions = False,
+    loss_type = "dr_grpo",
+)
+_original_apply_chat_template = tokenizer.apply_chat_template
+
+def _apply_chat_template_no_think(*args, **kwargs):
+    # 强制将 enable_thinking 设置为 False
+    kwargs["enable_thinking"] = False
+    return _original_apply_chat_template(*args, **kwargs)
+
+tokenizer.apply_chat_template = _apply_chat_template_no_think
+trainer = GRPOTrainer(
+    model = model,
+    args = training_args,
+    # Pass the processor to handle multimodal inputs
+    processing_class = tokenizer,
+    reward_funcs = [
+        raward,
+    ],
+    train_dataset = train_dataset,
+)
+
+trainer.train()
+model.save_pretrained(r"D:\liu\Desktop\多模态文化图片+文字\qwen3_5_lora7_model")
+tokenizer.save_pretrained(r"D:\liu\Desktop\多模态文化图片+文字\qwen3_5_lora7_model")
