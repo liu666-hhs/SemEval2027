@@ -51,10 +51,9 @@
   
 奖励函数 (Reward Function)：
 使用 jhu-clsp/mmBERT-base 模型计算 BERTScore F1（提取第 17 层特征）。
-关键点：奖励模型强制运行在 device="cpu"，防止与策略模型抢夺显存。
-前 Baseline 分数：
 
 
+当前分数
 <img width="656" height="22" alt="image" src="https://github.com/user-attachments/assets/3a2bd945-00f4-41fd-92c6-0c3e9ca8e461" />
+错点：认不清图片文字还有文化地点
 
-GRPO 模型：BERTScore-F1 = [待填入]训练时长
