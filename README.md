@@ -52,6 +52,7 @@
 奖励函数 (Reward Function)：
 使用 jhu-clsp/mmBERT-base 模型计算 BERTScore F1（提取第 17 层特征）。
 
+<img width="485" height="93" alt="image" src="https://github.com/user-attachments/assets/9b62725b-867d-4d2a-8d47-9563b91074fe" />
 
 当前分数
 <img width="656" height="22" alt="image" src="https://github.com/user-attachments/assets/3a2bd945-00f4-41fd-92c6-0c3e9ca8e461" />
