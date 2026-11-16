@@ -54,6 +54,7 @@
 关键点：奖励模型强制运行在 device="cpu"，防止与策略模型抢夺显存。
 前 Baseline 分数：
 
-SFT 模型：BERTScore-F1 = 0.8722
+
+<img width="656" height="22" alt="image" src="https://github.com/user-attachments/assets/3a2bd945-00f4-41fd-92c6-0c3e9ca8e461" />
 
 GRPO 模型：BERTScore-F1 = [待填入]训练时长
