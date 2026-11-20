@@ -5,7 +5,7 @@ import torch
 from PIL import Image
 from unsloth import FastModel, FastVisionModel, UnslothVisionDataCollator
 from trl import SFTConfig, SFTTrainer
-from datasets import Dataset,  Sequence, load_dataset
+from datasets import Dataset,  Sequence, load_dataset,concatenate_datasets
 from datasets import Dataset, Sequence, load_dataset, Image as HFImage
 from bert_score import score
 import bert_score.utils as bert_score_utils
@@ -27,15 +27,15 @@ def prepare_example(example):
 
 bert_score_utils.sent_encode = _sent_encode_compat
 
-max_seq_length = 1200   # MAX_SIDE=800 下实测最长样本 761 token，余量 ~26%
-MAX_SIDE=900
-w = load_dataset("parquet", data_files=r"D:\liu\Desktop\多模态文化图片+文字\dataset\train_en.parquet",split="train")
-IMAGE_ROOT = r"D:\liu\Desktop\多模态文化图片+文字\dataset\images_mena_train"
-N = 10000
+max_seq_length = 1700   # MAX_SIDE=800 下实测最长样本 761 token，余量 ~26%
+MAX_SIDE=1200
+w = load_dataset("parquet", data_files=r"/hy-tmp/ll/train_en.parquet",split="train")
+IMAGE_ROOT = r"/hy-tmp/ll/images_mena_train"
+
 def make_prompt(q):
     return (
-        "Look at the image and answer the question in 1–2 concise sentences. "
-        "Do not deviate from the question, and do not guess, speculate, or fabricate."
+        "Look at the image and answer the question in 1–2 sentences."
+        "Do not deviate from the question, and do not fabricate."
         f"\n\nQuestion: {q}"
     )
 def load_image(path):
@@ -57,13 +57,36 @@ def load_image_column(example):
                 ]},
             ]
         }
-w = load_dataset("parquet", data_files=r"D:\liu\Desktop\多模态文化图片+文字\dataset\train_en.parquet",split="train")
+N=len(w)
+nn=len(w)-1
+def load_image_column1(example,idx):
+    l1=nn-idx
+    ll =r"/hy-tmp/ll/0ff41bd5ad6eddc443ed3cf631dbb6fd526633b0.png"
+    h2="The image does not contain what you mentioned."
+    h1=w[l1]["answer"]
+    h1=h2
+    return {
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "image", "image":ll},
+                    {"type": "text", "text":make_prompt(example['question'])},
+                ]},
+                {"role": "assistant", "content": [
+                    {"type": "text", "text":h1},
+                ]},
+            ]
+        }
 
-
+ll=load_dataset("parquet", data_files=r"/hy-tmp/ll/train_en.parquet",split="train")
+ll= ll.select(range(100)) 
+ff=ll.map(load_image_column1,with_indices=True)
 w = w.select(range(N)) 
-dataset = w.map(load_image_column)
+
+gg = w.map(load_image_column)
+dataset=concatenate_datasets([gg,ff])
+dataset = dataset.shuffle(seed=42)
 model, tokenizer = FastVisionModel.from_pretrained(
-    model_name = r"D:\huggingface\QwenQwen3.5-4B",
+    model_name = r"/hy-tmp/models/Qwen3.5-9B",
     max_seq_length = max_seq_length,
     load_in_4bit = True,   # MoE QLoRA not recommended, dense 27B is fine
     load_in_16bit = False,     # bf16/16-bit LoRA
@@ -76,10 +99,10 @@ model = FastVisionModel.get_peft_model(
     finetune_language_layers   = True, # False if not finetuning language layers
     finetune_attention_modules = True, # False if not finetuning attention layers
     finetune_mlp_modules       = True, # False if not finetuning MLP layers
-    r =16,       
+    r =32,       
                         # The larger, the higher the accuracy, but might overfit
-    lora_alpha = 32,                  # Recommended alpha == r at least
-    lora_dropout = 0,
+    lora_alpha = 64,                  # Recommended alpha == r at least
+    lora_dropout = 0.05,
     bias = "none",
     use_gradient_checkpointing = "unsloth", 
     random_state = 3407,
@@ -95,21 +118,20 @@ trainer = SFTTrainer(
     data_collator =UnslothVisionDataCollator(model, tokenizer,  resize="max",train_on_responses_only=True,formatting_func=prepare_example,instruction_part="<|im_start|>user\n", response_part="<|im_start|>assistant\n<think>\n\n</think>\n\n"), # Must use!
     train_dataset = dataset,
     args = SFTConfig(
-        per_device_train_batch_size = 1,
+        per_device_train_batch_size = 2,
         gradient_accumulation_steps = 16,
         warmup_ratio = 0.1,
-        num_train_epochs = 2,
+        num_train_epochs = 1,
         # num_train_epochs = 2, # Set this instead of max_steps for full training runs
-        learning_rate = 1e-4,
+        learning_rate = 2e-4,
         logging_steps = 1,
         optim = "adamw_8bit",
-        weight_decay = 0.001,
+        weight_decay = 0.003,
         lr_scheduler_type = "linear",
         seed = 3407,
-        output_dir = "outputs",
+        output_dir = "/hy-tmp/ll/outputs",
         report_to = "none",     # For Weights and Biases
         bf16=True,
-        # You MUST put the below items for vision finetuning:
         remove_unused_columns = False,
         dataset_text_field = "",
         dataset_kwargs = {"skip_prepare_dataset": True},
@@ -117,126 +139,126 @@ trainer = SFTTrainer(
     ),
 )
 trainer.train()
-model.save_pretrained(r"D:\liu\Desktop\多模态文化图片+文字\qwen3_5_lora99_model")
-tokenizer.save_pretrained(r"D:\liu\Desktop\多模态文化图片+文字\qwen3_5_lora99_model")
-print("LoRA 适配器已保存至 qwen3_5_lora_model 文件夹")
-FastVisionModel.for_inference(model)
-# 1. 切推理模式
-model.eval()
-w1 = load_dataset(
-    "parquet",
-    data_files=r"D:\liu\Desktop\多模态文化图片+文字\dataset\dev_en.parquet",
-    split="train",
-)
-image_root = r"D:\liu\Desktop\多模态文化图片+文字\dataset\images_mena_dev"
+model.save_pretrained(r"/hy-tmp/ll/qwen3_5_lora199_model")
+tokenizer.save_pretrained(r"/hy-tmp/ll/qwen3_5_lora199_model")
+# print("LoRA 适配器已保存至 qwen3_5_lora_model 文件夹")
+# FastVisionModel.for_inference(model)
+# # 1. 切推理模式
+# model.eval()
+# w1 = load_dataset(
+#     "parquet",
+#     data_files=r"D:\liu\Desktop\多模态文化图片+文字\dataset\dev_en.parquet",
+#     split="train",
+# )
+# image_root = r"D:\liu\Desktop\多模态文化图片+文字\dataset\images_mena_dev"
 
-predictions, references, records = [], [], []
-print("=============================")
-print(len(w1))
-N=min(len(w1),200)
-w2 = w1.select(range(N))
+# predictions, references, records = [], [], []
+# print("=============================")
+# print(len(w1))
+# N=min(len(w1),200)
+# w2 = w1.select(range(N))
 
-# 保存成 parquet 文件（如果你执意要覆盖，就用你写的那个名字）
-save_path = r"D:\liu\Desktop\多模态文化图片+文字\dev_en.parquet" 
-w2.to_parquet(save_path)
+# # 保存成 parquet 文件（如果你执意要覆盖，就用你写的那个名字）
+# save_path = r"D:\liu\Desktop\多模态文化图片+文字\dev_en.parquet" 
+# w2.to_parquet(save_path)
 
-print(f"成功保存 {len(w2)} 条数据到: {save_path}")
+# print(f"成功保存 {len(w2)} 条数据到: {save_path}")
 
-pad_token_id = tokenizer.tokenizer.pad_token_id or tokenizer.tokenizer.eos_token_id
+# pad_token_id = tokenizer.tokenizer.pad_token_id or tokenizer.tokenizer.eos_token_id
 
-eos_ids = resolve_eos_ids(tokenizer)   # 必须显式给：<|im_end|> 不在模型自带 eos 里
-BATCH_SIZE = 10  
-results=[]
-for start in range(0, N, BATCH_SIZE):
-    end = min(start + BATCH_SIZE, N)
-    batch_rows = [w1[i] for i in range(start, end)]
+# eos_ids = resolve_eos_ids(tokenizer)   # 必须显式给：<|im_end|> 不在模型自带 eos 里
+# BATCH_SIZE = 10  
+# results=[]
+# for start in range(0, N, BATCH_SIZE):
+#     end = min(start + BATCH_SIZE, N)
+#     batch_rows = [w1[i] for i in range(start, end)]
 
-    images, texts = [], []
-    for row in batch_rows:
-        image_path = os.path.join(image_root, row["image"])
-        images.append(load_image(image_path))
-                # 使用 f-string，并且只把 row["question"] 拼进去
-        texts.append(
-            tokenizer.apply_chat_template(
-                [{"role": "user", "content": [
-                    {"type": "image"},
-                    {"type": "text", "text":make_prompt(row['question'])},
-                ]}],
-                tokenize=False,
-                add_generation_prompt=True, 
-                enable_thinking=False,  # 关闭思考过程
-            )
-        )
+#     images, texts = [], []
+#     for row in batch_rows:
+#         image_path = os.path.join(image_root, row["image"])
+#         images.append(load_image(image_path))
+#                 # 使用 f-string，并且只把 row["question"] 拼进去
+#         texts.append(
+#             tokenizer.apply_chat_template(
+#                 [{"role": "user", "content": [
+#                     {"type": "image"},
+#                     {"type": "text", "text":make_prompt(row['question'])},
+#                 ]}],
+#                 tokenize=False,
+#                 add_generation_prompt=True, 
+#                 enable_thinking=False,  # 关闭思考过程
+#             )
+#         )
     
-    tokenizer.tokenizer.padding_side = "left"
-    inputs = tokenizer(
-    images=images,               # ← 命名传参
-    text=texts,                  # ← 命名传参
-    add_special_tokens=False,
-    return_tensors="pt",
-    padding=True,
-).to("cuda")
+#     tokenizer.tokenizer.padding_side = "left"
+#     inputs = tokenizer(
+#     images=images,               # ← 命名传参
+#     text=texts,                  # ← 命名传参
+#     add_special_tokens=False,
+#     return_tensors="pt",
+#     padding=True,
+# ).to("cuda")
 
-    with torch.inference_mode():
-        with torch.autocast("cuda", dtype=torch.bfloat16):
-            generated_ids = model.generate(
-                **inputs,
-                max_new_tokens=100,
-                use_cache=True,
-                do_sample=False,
-                eos_token_id=eos_ids,
-                pad_token_id=pad_token_id,
-            )
+#     with torch.inference_mode():
+#         with torch.autocast("cuda", dtype=torch.bfloat16):
+#             generated_ids = model.generate(
+#                 **inputs,
+#                 max_new_tokens=100,
+#                 use_cache=True,
+#                 do_sample=False,
+#                 eos_token_id=eos_ids,
+#                 pad_token_id=pad_token_id,
+#             )
 
-    gen_trimmed = generated_ids[:, inputs["input_ids"].shape[1]:]
-    answers = tokenizer.batch_decode(
-        gen_trimmed,
-        skip_special_tokens=True,
-        clean_up_tokenization_spaces=False,
-    )
+#     gen_trimmed = generated_ids[:, inputs["input_ids"].shape[1]:]
+#     answers = tokenizer.batch_decode(
+#         gen_trimmed,
+#         skip_special_tokens=True,
+#         clean_up_tokenization_spaces=False,
+#     )
 
-    for row, ans in zip(batch_rows, answers):
-        ans = ans.strip()
+#     for row, ans in zip(batch_rows, answers):
+#         ans = ans.strip()
 
-        predictions.append(ans)
-        references.append(str(row["answer"]).strip())
-        results.append({
-            "id": row['id'],  # ⚠️ 官方脚本需要靠这个或者 id 来配对，见下方注意点
-            "answer": ans
-        })
-        records.append({
-            "image": row["image"],
-            "question": row["question"],
-            "prediction": ans,
-            "reference": row["answer"],
-        })
+#         predictions.append(ans)
+#         references.append(str(row["answer"]).strip())
+#         results.append({
+#             "id": row['id'],  # ⚠️ 官方脚本需要靠这个或者 id 来配对，见下方注意点
+#             "answer": ans
+#         })
+#         records.append({
+#             "image": row["image"],
+#             "question": row["question"],
+#             "prediction": ans,
+#             "reference": row["answer"],
+#         })
 
-    del inputs, generated_ids, gen_trimmed
-    torch.cuda.empty_cache()       
+#     del inputs, generated_ids, gen_trimmed
+#     torch.cuda.empty_cache()       
 
-print("预测答案数量:", len(predictions))
-print("标准答案数量:", len(references))
-with open(r"D:\liu\Desktop\多模态文化图片+文字\prediction.jsonl", "w", encoding="utf-8") as f:
-    for item in results:
-        # json.dumps 会把字典转换成合法的 JSON 字符串
-        # ensure_ascii=False 保证特殊字符（比如中文、阿拉伯语）正常显示，不被转义
-        f.write(json.dumps(item, ensure_ascii=False) + "\n")
+# print("预测答案数量:", len(predictions))
+# print("标准答案数量:", len(references))
+# with open(r"D:\liu\Desktop\多模态文化图片+文字\prediction.jsonl", "w", encoding="utf-8") as f:
+#     for item in results:
+#         # json.dumps 会把字典转换成合法的 JSON 字符串
+#         # ensure_ascii=False 保证特殊字符（比如中文、阿拉伯语）正常显示，不被转义
+#         f.write(json.dumps(item, ensure_ascii=False) + "\n")
 
-print("prediction.jsonl 保存成功！可以去跑 score.py 评测了！")
-print(records[0]["question"])
-print("-----------------------")
-print(predictions[0])
-print("dddddddddddddddddddddddddddddddd")
-print(records[1]["question"])
-print("-----------------------")
-print(predictions[1])
-print("dddddddddddddddddddddddddddddddd")
-print(references[1])
+# print("prediction.jsonl 保存成功！可以去跑 score.py 评测了！")
+# print(records[0]["question"])
+# print("-----------------------")
+# print(predictions[0])
+# print("dddddddddddddddddddddddddddddddd")
+# print(records[1]["question"])
+# print("-----------------------")
+# print(predictions[1])
+# print("dddddddddddddddddddddddddddddddd")
+# print(references[1])
 
-print("dddddddddddddddddddddddddddddddd")
-print(records[2]["question"])
-print("-----------------------")
-print(predictions[2])
-print("dddddddddddddddddddddddddddddddd")
-print(references[2])
+# print("dddddddddddddddddddddddddddddddd")
+# print(records[2]["question"])
+# print("-----------------------")
+# print(predictions[2])
+# print("dddddddddddddddddddddddddddddddd")
+# print(references[2])
 
